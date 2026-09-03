@@ -235,16 +235,43 @@ class GrappleClient:
 # Reporting windows and statistics
 # --------------------------------------------------------------------------- #
 def report_windows(report_date: date, tz: ZoneInfo) -> tuple[Window, Window]:
-    """Return (report-day window, month-to-date window) for a local calendar date."""
-    day_start = datetime(report_date.year, report_date.month, report_date.day, tzinfo=tz)
-    day_end = day_start + timedelta(days=1)
-    month_start = day_start.replace(day=1)
-    day_label = report_date.strftime("%b %-d")
-    if month_start.date() == report_date:
-        month_label = day_label
-    else:
-        month_label = f"{month_start.strftime('%b %-d')} – {day_label}"
-    return Window(day_label, day_start, day_end), Window(month_label, month_start, day_end)
+    """Return (report-period window, month-to-date window) for a local calendar date.
+
+    The report period is normally the single report date. When the report date
+    is a Sunday (the Monday morning run) it stretches back to Friday so weekend
+    activity is not lost.
+    """
+    day_end = datetime(report_date.year, report_date.month, report_date.day, tzinfo=tz) + timedelta(days=1)
+    lookback_days = 3 if report_date.weekday() == 6 else 1
+    period_start = day_end - timedelta(days=lookback_days)
+    month_start = datetime(report_date.year, report_date.month, 1, tzinfo=tz)
+
+    last_day = day_end - timedelta(days=1)
+    period_label = _range_label(period_start, last_day)
+    month_label = _range_label(month_start, last_day)
+    return Window(period_label, period_start, day_end), Window(month_label, month_start, day_end)
+
+
+def _range_label(start: datetime, last_day: datetime) -> str:
+    if start.date() == last_day.date():
+        return start.strftime("%b %-d")
+    return f"{start.strftime('%b %-d')} – {last_day.strftime('%b %-d')}"
+
+
+def period_name(window: Window) -> str:
+    """Human name for the report period: 'Yesterday' or 'Friday – Sunday'."""
+    days = (window.end - window.start).days
+    if days <= 1:
+        return "Yesterday"
+    last_day = window.end - timedelta(days=1)
+    return f"{window.start.strftime('%A')} – {last_day.strftime('%A')}"
+
+
+def digest_title(report_date: date, window: Window) -> str:
+    if (window.end - window.start).days <= 1:
+        return f"GTM Email Digest — {report_date.strftime('%A, %b %-d, %Y')}"
+    last_day = window.end - timedelta(days=1)
+    return f"GTM Email Digest — {window.start.strftime('%a %b %-d')} – {last_day.strftime('%a %b %-d, %Y')}"
 
 
 def default_report_date(now: datetime, tz: ZoneInfo) -> date:
@@ -346,12 +373,13 @@ def build_message(
 ) -> tuple[str, list[dict]]:
     day_stats = compute_stats(day_emails)
     month_stats = compute_stats(month_emails)
-    title = f"GTM Email Digest — {report_date.strftime('%A, %b %-d, %Y')}"
+    title = digest_title(report_date, day_window)
+    period = period_name(day_window)
 
     blocks: list[dict] = [
         {"type": "header", "text": {"type": "plain_text", "text": title[:150], "emoji": True}},
         _context(f"Grapple workspace *{workspace_name}* · project *{project_name}* · day boundaries in {tz_name}"),
-        _section(f"*Yesterday ({day_window.label})*\n{_stats_lines(day_stats)}"),
+        _section(f"*{period} ({day_window.label})*\n{_stats_lines(day_stats)}"),
     ]
 
     human = sorted((e for e in day_emails if e.is_human_reply), key=lambda e: e.timestamp)
@@ -363,7 +391,8 @@ def build_message(
             text += f"\n… and {len(human) - len(listed)} more"
         blocks.append(_section(text))
     else:
-        blocks.append(_section("*Replies from people*\n_No human replies yesterday._"))
+        when = "yesterday" if period == "Yesterday" else "over the weekend"
+        blocks.append(_section(f"*Replies from people*\n_No human replies {when}._"))
     if auto:
         listed = auto[:MAX_LISTED_REPLIES]
         text = f"*Auto-replies / out of office ({len(auto)})*\n" + "\n".join(_reply_line(e) for e in listed)

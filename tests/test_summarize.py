@@ -110,6 +110,29 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(month.end, day.end)
         self.assertEqual(month.label, "Sep 1 – Sep 2")
 
+    def test_sunday_report_covers_friday_to_sunday(self):
+        # 2026-08-30 is a Sunday.
+        day, month = s.report_windows(date(2026, 8, 30), TZ)
+        self.assertEqual(day.start, datetime(2026, 8, 28, 0, 0, tzinfo=TZ))
+        self.assertEqual(day.end, datetime(2026, 8, 31, 0, 0, tzinfo=TZ))
+        self.assertEqual(day.label, "Aug 28 – Aug 30")
+        self.assertEqual(s.period_name(day), "Friday – Sunday")
+        self.assertEqual(s.digest_title(date(2026, 8, 30), day), "GTM Email Digest — Fri Aug 28 – Sun Aug 30, 2026")
+        self.assertEqual(month.label, "Aug 1 – Aug 30")
+
+    def test_weekend_spanning_month_boundary(self):
+        # 2026-11-01 is a Sunday; the period reaches back into October.
+        day, month = s.report_windows(date(2026, 11, 1), TZ)
+        self.assertEqual(day.start.date(), date(2026, 10, 30))
+        self.assertEqual(day.label, "Oct 30 – Nov 1")
+        self.assertEqual(month.start.date(), date(2026, 11, 1))
+        self.assertEqual(month.label, "Nov 1")
+
+    def test_weekday_report_is_single_day(self):
+        day, _ = s.report_windows(date(2026, 9, 2), TZ)
+        self.assertEqual(s.period_name(day), "Yesterday")
+        self.assertEqual(s.digest_title(date(2026, 9, 2), day), "GTM Email Digest — Wednesday, Sep 2, 2026")
+
     def test_first_of_month_labels(self):
         day, month = s.report_windows(date(2026, 9, 1), TZ)
         self.assertEqual(month.label, "Sep 1")
@@ -182,6 +205,18 @@ class MessageTests(unittest.TestCase):
         flat = "\n".join(str(b) for b in blocks)
         self.assertIn("No human replies yesterday", flat)
         self.assertNotIn("Auto-replies", flat)
+
+    def test_weekend_message_wording(self):
+        day, month = s.report_windows(date(2026, 8, 30), TZ)
+        _, blocks = s.build_message(
+            report_date=date(2026, 8, 30), day_window=day, month_window=month,
+            day_emails=[], month_emails=[], workspace_name="WS", project_name="Emails",
+            tz_name="America/Chicago", generated_at=datetime(2026, 8, 31, 9, 0, tzinfo=TZ),
+        )
+        flat = "\n".join(str(b) for b in blocks)
+        self.assertIn("Fri Aug 28 – Sun Aug 30, 2026", blocks[0]["text"]["text"])
+        self.assertIn("*Friday – Sunday (Aug 28 – Aug 30)*", flat)
+        self.assertIn("No human replies over the weekend", flat)
 
     def test_long_reply_list_is_capped(self):
         many = [email(ue_type=2, lead=f"lead{i}@x.com", subject="Re: hi") for i in range(30)]

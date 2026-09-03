@@ -4,7 +4,8 @@ Posts a daily digest of the **Emails** project in the Grapple workspace
 **Grapple Marketing** to the **#gtm** Slack channel, every weekday at
 9:00 AM Central (America/Chicago).
 
-The digest covers **yesterday** and **month to date**:
+The digest covers **yesterday** (Friday through Sunday on Mondays) and
+**month to date**:
 
 - campaign emails sent (plus manual sends)
 - replies received, split into replies from people and auto-replies / out-of-office
@@ -80,6 +81,6 @@ python -m unittest discover -s tests -v
 
 ## Notes
 
-- Weekend activity is not in Monday's "yesterday" section (that covers Sunday
-  only) but is always included in the month-to-date figures.
+- Monday's digest covers Friday through Sunday so weekend replies are not
+  lost. Passing `--date` with a Sunday does the same.
 - `UeType` mapping used: 1 = sent from campaign, 2 = received, 3 = sent manually.
