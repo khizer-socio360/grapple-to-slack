@@ -84,3 +84,7 @@ python -m unittest discover -s tests -v
 - Monday's digest covers Friday through Sunday so weekend replies are not
   lost. Passing `--date` with a Sunday does the same.
 - `UeType` mapping used: 1 = sent from campaign, 2 = received, 3 = sent manually.
+
+## License
+
+[MIT](LICENSE)
