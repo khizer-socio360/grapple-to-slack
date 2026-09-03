@@ -1,0 +1,60 @@
+name: Daily GTM email digest
+
+on:
+  schedule:
+    # 9:00 AM America/Chicago on weekdays. GitHub cron is UTC-only, so both
+    # the CDT (UTC-5) and CST (UTC-6) offsets are scheduled; the script's
+    # --require-local-hour flag skips whichever one is not 9 AM local.
+    - cron: "0 14 * * 1-5"
+    - cron: "0 15 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      report_date:
+        description: "Report date (YYYY-MM-DD, America/Chicago). Leave blank for yesterday."
+        required: false
+        default: ""
+      dry_run:
+        description: "Print the message in the job log instead of posting to Slack"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Build and post digest
+        env:
+          GRAPPLE_API_KEY: ${{ secrets.GRAPPLE_API_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ vars.SLACK_CHANNEL || '#gtm' }}
+          REPORT_TIMEZONE: America/Chicago
+        run: |
+          args=()
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            args+=(--require-local-hour 9)
+          fi
+          if [ -n "${{ inputs.report_date }}" ]; then
+            args+=(--date "${{ inputs.report_date }}")
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          python summarize.py "${args[@]}"
