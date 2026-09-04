@@ -1,5 +1,5 @@
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import mock
 from zoneinfo import ZoneInfo
 
@@ -101,53 +101,34 @@ class WindowTests(unittest.TestCase):
         now = datetime(2026, 9, 3, 3, 30, tzinfo=timezone.utc)
         self.assertEqual(s.default_report_date(now, TZ), date(2026, 9, 1))
 
-    def test_day_window_uses_local_midnight(self):
-        day, month = s.report_windows(date(2026, 9, 2), TZ)
-        self.assertEqual(day.start, datetime(2026, 9, 2, 0, 0, tzinfo=TZ))
-        self.assertEqual(day.end, datetime(2026, 9, 3, 0, 0, tzinfo=TZ))
-        self.assertEqual(day.label, "Sep 2")
-        self.assertEqual(month.start, datetime(2026, 9, 1, 0, 0, tzinfo=TZ))
-        self.assertEqual(month.end, day.end)
-        self.assertEqual(month.label, "Sep 1 – Sep 2")
+    def test_seven_day_windows(self):
+        current, previous = s.report_windows(date(2026, 9, 3), TZ)
+        self.assertEqual(current.start, datetime(2026, 8, 28, 0, 0, tzinfo=TZ))
+        self.assertEqual(current.end, datetime(2026, 9, 4, 0, 0, tzinfo=TZ))
+        self.assertEqual(current.label, "Aug 28 – Sep 3")
+        self.assertEqual(previous.start, datetime(2026, 8, 21, 0, 0, tzinfo=TZ))
+        self.assertEqual(previous.end, current.start)
+        self.assertEqual(previous.label, "Aug 21 – Aug 27")
 
-    def test_sunday_report_covers_friday_to_sunday(self):
-        # 2026-08-30 is a Sunday.
-        day, month = s.report_windows(date(2026, 8, 30), TZ)
-        self.assertEqual(day.start, datetime(2026, 8, 28, 0, 0, tzinfo=TZ))
-        self.assertEqual(day.end, datetime(2026, 8, 31, 0, 0, tzinfo=TZ))
-        self.assertEqual(day.label, "Aug 28 – Aug 30")
-        self.assertEqual(s.period_name(day), "Friday – Sunday")
-        self.assertEqual(s.digest_title(date(2026, 8, 30), day), "GTM Email Digest — Fri Aug 28 – Sun Aug 30, 2026")
-        self.assertEqual(month.label, "Aug 1 – Aug 30")
+    def test_custom_window_length(self):
+        current, previous = s.report_windows(date(2026, 9, 3), TZ, days=1)
+        self.assertEqual(current.label, "Sep 3")
+        self.assertEqual(previous.label, "Sep 2")
+        with self.assertRaises(ValueError):
+            s.report_windows(date(2026, 9, 3), TZ, days=0)
 
-    def test_weekend_spanning_month_boundary(self):
-        # 2026-11-01 is a Sunday; the period reaches back into October.
-        day, month = s.report_windows(date(2026, 11, 1), TZ)
-        self.assertEqual(day.start.date(), date(2026, 10, 30))
-        self.assertEqual(day.label, "Oct 30 – Nov 1")
-        self.assertEqual(month.start.date(), date(2026, 11, 1))
-        self.assertEqual(month.label, "Nov 1")
-
-    def test_weekday_report_is_single_day(self):
-        day, _ = s.report_windows(date(2026, 9, 2), TZ)
-        self.assertEqual(s.period_name(day), "Yesterday")
-        self.assertEqual(s.digest_title(date(2026, 9, 2), day), "GTM Email Digest — Wednesday, Sep 2, 2026")
-
-    def test_first_of_month_labels(self):
-        day, month = s.report_windows(date(2026, 9, 1), TZ)
-        self.assertEqual(month.label, "Sep 1")
-        self.assertEqual(month.start, day.start)
-
-    def test_month_end_report_covers_whole_month(self):
-        _, month = s.report_windows(date(2026, 9, 30), TZ)
-        self.assertEqual(month.start.date(), date(2026, 9, 1))
-        self.assertEqual(month.end.date(), date(2026, 10, 1))
+    def test_windows_span_dst_change(self):
+        # DST ends Sun Nov 1, 2026 in America/Chicago; the day boundaries stay at local midnight.
+        current, _ = s.report_windows(date(2026, 11, 3), TZ)
+        self.assertEqual(current.start, datetime(2026, 10, 28, 0, 0, tzinfo=TZ))
+        self.assertEqual(current.start.utcoffset(), timedelta(hours=-5))
+        self.assertEqual((current.end - timedelta(seconds=1)).utcoffset(), timedelta(hours=-6))
 
     def test_contains_respects_boundaries(self):
-        day, _ = s.report_windows(date(2026, 9, 2), TZ)
-        self.assertTrue(day.contains(datetime(2026, 9, 2, 5, 0, tzinfo=timezone.utc)))  # 00:00 CDT
-        self.assertFalse(day.contains(datetime(2026, 9, 2, 4, 59, tzinfo=timezone.utc)))  # 23:59 CDT Sep 1
-        self.assertFalse(day.contains(datetime(2026, 9, 3, 5, 0, tzinfo=timezone.utc)))  # 00:00 CDT Sep 3
+        current, _ = s.report_windows(date(2026, 9, 2), TZ, days=1)
+        self.assertTrue(current.contains(datetime(2026, 9, 2, 5, 0, tzinfo=timezone.utc)))  # 00:00 CDT
+        self.assertFalse(current.contains(datetime(2026, 9, 2, 4, 59, tzinfo=timezone.utc)))  # 23:59 CDT Sep 1
+        self.assertFalse(current.contains(datetime(2026, 9, 3, 5, 0, tzinfo=timezone.utc)))  # 00:00 CDT Sep 3
 
 
 class StatsTests(unittest.TestCase):
@@ -173,56 +154,76 @@ class StatsTests(unittest.TestCase):
         self.assertEqual(s.rate(1, 0), "n/a")
         self.assertEqual(s.rate(3, 130), "2.3%")
 
+    def test_delta_formatting(self):
+        self.assertEqual(s.delta(10, 4), "+6")
+        self.assertEqual(s.delta(4, 10), "-6")
+        self.assertEqual(s.delta(3, 3), "±0")
+        self.assertEqual(s.rate_delta(2.5, 1.0), "+1.5 pts")
+        self.assertEqual(s.rate_delta(1.0, 2.5), "-1.5 pts")
+        self.assertEqual(s.rate_delta(1.0, 1.02), "±0.0 pts")
+        self.assertEqual(s.rate_delta(None, 1.0), "n/a")
+        self.assertEqual(s.rate_delta(1.0, None), "n/a")
+
 
 class MessageTests(unittest.TestCase):
-    def build(self, day_emails):
-        day, month = s.report_windows(date(2026, 9, 2), TZ)
+    def build(self, emails, previous_emails=()):
+        current, previous = s.report_windows(date(2026, 9, 3), TZ)
         return s.build_message(
-            report_date=date(2026, 9, 2), day_window=day, month_window=month,
-            day_emails=day_emails, month_emails=day_emails, workspace_name="WS", project_name="Emails",
-            tz_name="America/Chicago", generated_at=datetime(2026, 9, 3, 9, 0, tzinfo=TZ),
+            window=current, previous_window=previous,
+            emails=emails, previous_emails=list(previous_emails),
+            workspace_name="WS", project_name="Emails", tz_name="America/Chicago",
+            generated_at=datetime(2026, 9, 4, 9, 0, tzinfo=TZ),
         )
 
-    def test_message_contains_replies_and_lead_email(self):
-        text, blocks = self.build([
-            email(ue_type=1), email(ue_type=2, lead="jane@acme.com", subject="Re: hi", ai_interest=2),
+    def test_message_has_deltas_and_replies(self):
+        current = [
+            email(ue_type=1), email(ue_type=1), email(ue_type=1),
+            email(ue_type=2, lead="jane@acme.com", subject="Re: hi", ai_interest=2),
             email(ue_type=2, lead="ooo@acme.com", subject="Out of office"),
-        ])
+        ]
+        previous = [email(ue_type=1), email(ue_type=2, subject="Re: earlier")]
+        text, blocks = self.build(current, previous)
         flat = "\n".join(str(b) for b in blocks)
-        self.assertIn("Wednesday, Sep 2, 2026", blocks[0]["text"]["text"])
+        self.assertEqual(blocks[0]["text"]["text"], "GTM Email Digest — Last 7 days (Aug 28 – Sep 3)")
+        self.assertIn("previous 7 days (Aug 21 – Aug 27)", flat)
+        self.assertIn("*Sent:* 3  (+2)", flat)
+        self.assertIn("*Replies:* 2  (+1)  ·  1 from people, 1 auto-reply/OOO", flat)
+        self.assertIn("*Reply rate:* 66.7%  (-33.3 pts)", flat)
+        self.assertIn("*Flagged interested:* 1  (+1)", flat)
         self.assertIn("jane@acme.com", flat)
         self.assertIn(":star:", flat)
-        self.assertIn("Auto-replies / out of office (1)", flat)
-        self.assertIn("ooo@acme.com", flat)
-        self.assertIn("1 sent, 2 replies (1 human)", text)
+        self.assertNotIn("ooo@acme.com", flat)  # auto-replies are counted, not listed
+        self.assertIn("Camp A", flat)
+        self.assertIn("3 (+2)", flat)
+        self.assertIn("3 sent (+2), 2 replies (+1), 1 from people", text)
         self.assertLessEqual(len(blocks), 50)
         for block in blocks:
             if block["type"] == "section":
                 self.assertLessEqual(len(block["text"]["text"]), 3000)
 
-    def test_message_with_no_replies(self):
-        _, blocks = self.build([email(ue_type=1)])
+    def test_message_with_no_activity(self):
+        text, blocks = self.build([])
         flat = "\n".join(str(b) for b in blocks)
-        self.assertIn("No human replies yesterday", flat)
-        self.assertNotIn("Auto-replies", flat)
-
-    def test_weekend_message_wording(self):
-        day, month = s.report_windows(date(2026, 8, 30), TZ)
-        _, blocks = s.build_message(
-            report_date=date(2026, 8, 30), day_window=day, month_window=month,
-            day_emails=[], month_emails=[], workspace_name="WS", project_name="Emails",
-            tz_name="America/Chicago", generated_at=datetime(2026, 8, 31, 9, 0, tzinfo=TZ),
-        )
-        flat = "\n".join(str(b) for b in blocks)
-        self.assertIn("Fri Aug 28 – Sun Aug 30, 2026", blocks[0]["text"]["text"])
-        self.assertIn("*Friday – Sunday (Aug 28 – Aug 30)*", flat)
-        self.assertIn("No human replies over the weekend", flat)
+        self.assertIn("*Sent:* 0  (±0)", flat)
+        self.assertIn("*Reply rate:* n/a  (n/a)", flat)
+        self.assertIn("No campaign activity", flat)
+        self.assertIn("None in this period", flat)
+        self.assertNotIn("Flagged interested", flat)
 
     def test_long_reply_list_is_capped(self):
         many = [email(ue_type=2, lead=f"lead{i}@x.com", subject="Re: hi") for i in range(30)]
         _, blocks = self.build(many)
         flat = "\n".join(str(b) for b in blocks)
+        self.assertIn("Replies from people (30)", flat)
         self.assertIn("… and 10 more", flat)
+
+    def test_campaign_table_uses_previous_period(self):
+        current = [email(ue_type=1, campaign="A"), email(ue_type=1, campaign="B")]
+        previous = [email(ue_type=1, campaign="A")] * 3
+        _, blocks = self.build(current, previous)
+        flat = "\n".join(str(b) for b in blocks)
+        self.assertIn("1 (-2)", flat)  # campaign A
+        self.assertIn("1 (+1)", flat)  # campaign B
 
 
 class GateTests(unittest.TestCase):

@@ -4,15 +4,15 @@ Posts a daily digest of the **Emails** project in the Grapple workspace
 **Grapple Marketing** to the **#gtm** Slack channel, every weekday at
 9:00 AM Central (America/Chicago).
 
-The digest covers **yesterday** (Friday through Sunday on Mondays) and
-**month to date**:
+Each digest covers the **last 7 days** (ending yesterday) and shows, for
+every number, the change versus the **7 days before that**:
 
-- campaign emails sent (plus manual sends)
+- campaign emails sent
 - replies received, split into replies from people and auto-replies / out-of-office
-- reply rate (overall and human-only)
-- a per-campaign table of sent / replies / human replies
-- the list of leads who replied yesterday (email, campaign, subject), with
-  a :star: on any lead Grapple's `AiInterestValue` flags as interested
+- reply rate
+- a per-campaign table of sent / replies, each with its change
+- the leads who replied in the period (email, campaign, subject), with a
+  :star: on any lead Grapple's `AiInterestValue` flags as interested
 
 Data comes from the [Grapple REST API](https://docs.askgrapple.com/api)
 (`GET /me`, `GET .../projects`, `GET .../projects/{id}/data`). The API has no
@@ -66,7 +66,8 @@ right away. The *report date* input lets you re-run a specific day.
 pip install -r requirements.txt
 export GRAPPLE_API_KEY=...
 python summarize.py --dry-run                 # print the message, don't post
-python summarize.py --dry-run --date 2026-09-02
+python summarize.py --dry-run --date 2026-09-02   # window ending on a specific day
+python summarize.py --dry-run --days 14           # longer window (and comparison period)
 export SLACK_BOT_TOKEN=xoxb-...
 python summarize.py --channel '#gtm'          # post for real
 ```
@@ -84,13 +85,14 @@ python -m unittest discover -s tests -v
   `--require-local-hour` value in the same file.
 - **Timezone:** set `REPORT_TIMEZONE` in the workflow (any IANA name).
 - **Channel:** set the `SLACK_CHANNEL` repository variable.
+- **Window length:** set `REPORT_WINDOW_DAYS` in the workflow (default 7).
+  The comparison period is always the same length, immediately before.
 - **What counts as an auto-reply:** `AUTO_REPLY_PATTERN` in `summarize.py`.
 - **Project name:** set `GRAPPLE_PROJECT` if the Grapple project is renamed.
 
 ## Notes
 
-- Monday's digest covers Friday through Sunday so weekend replies are not
-  lost. Passing `--date` with a Sunday does the same.
+- The 7-day window always includes the weekend, so nothing is lost on Monday.
 - `UeType` mapping used: 1 = sent from campaign, 2 = received, 3 = sent manually.
 
 ## License

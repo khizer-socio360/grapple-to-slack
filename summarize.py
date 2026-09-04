@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Post a daily digest of the Grapple "Emails" project to Slack.
 
-Pulls every row from the Grapple project, filters them to the report date
-("yesterday" in the configured timezone) and to month-to-date, computes
-sent / reply statistics, and posts a Block Kit message to a Slack channel.
+Pulls every row from the Grapple project, keeps the trailing 7 days (ending
+yesterday in the configured timezone), compares them with the 7 days before,
+and posts a short Block Kit message to a Slack channel.
 
 Environment variables:
     GRAPPLE_API_KEY   Grapple workspace API key (required).
@@ -11,6 +11,7 @@ Environment variables:
     SLACK_CHANNEL     Channel to post to (default: #gtm).
     GRAPPLE_PROJECT   Project name to summarise (default: Emails).
     REPORT_TIMEZONE   IANA timezone for day boundaries (default: America/Chicago).
+    REPORT_WINDOW_DAYS  Length of the window in days (default: 7).
 """
 from __future__ import annotations
 
@@ -234,44 +235,32 @@ class GrappleClient:
 # --------------------------------------------------------------------------- #
 # Reporting windows and statistics
 # --------------------------------------------------------------------------- #
-def report_windows(report_date: date, tz: ZoneInfo) -> tuple[Window, Window]:
-    """Return (report-period window, month-to-date window) for a local calendar date.
+DEFAULT_WINDOW_DAYS = 7
 
-    The report period is normally the single report date. When the report date
-    is a Sunday (the Monday morning run) it stretches back to Friday so weekend
-    activity is not lost.
+
+def report_windows(report_date: date, tz: ZoneInfo, days: int = DEFAULT_WINDOW_DAYS) -> tuple[Window, Window]:
+    """Return (current, previous) windows of `days` days each.
+
+    The current window ends at the end of `report_date` (inclusive); the
+    previous window is the `days` days immediately before it.
     """
-    day_end = datetime(report_date.year, report_date.month, report_date.day, tzinfo=tz) + timedelta(days=1)
-    lookback_days = 3 if report_date.weekday() == 6 else 1
-    period_start = day_end - timedelta(days=lookback_days)
-    month_start = datetime(report_date.year, report_date.month, 1, tzinfo=tz)
+    if days < 1:
+        raise ValueError("days must be at least 1")
+    end = datetime(report_date.year, report_date.month, report_date.day, tzinfo=tz) + timedelta(days=1)
+    start = end - timedelta(days=days)
+    prev_start = start - timedelta(days=days)
+    return (
+        Window(_range_label(start, end), start, end),
+        Window(_range_label(prev_start, start), prev_start, start),
+    )
 
-    last_day = day_end - timedelta(days=1)
-    period_label = _range_label(period_start, last_day)
-    month_label = _range_label(month_start, last_day)
-    return Window(period_label, period_start, day_end), Window(month_label, month_start, day_end)
 
-
-def _range_label(start: datetime, last_day: datetime) -> str:
+def _range_label(start: datetime, end: datetime) -> str:
+    """Label like 'Aug 29 – Sep 4' for [start, end)."""
+    last_day = end - timedelta(days=1)
     if start.date() == last_day.date():
         return start.strftime("%b %-d")
     return f"{start.strftime('%b %-d')} – {last_day.strftime('%b %-d')}"
-
-
-def period_name(window: Window) -> str:
-    """Human name for the report period: 'Yesterday' or 'Friday – Sunday'."""
-    days = (window.end - window.start).days
-    if days <= 1:
-        return "Yesterday"
-    last_day = window.end - timedelta(days=1)
-    return f"{window.start.strftime('%A')} – {last_day.strftime('%A')}"
-
-
-def digest_title(report_date: date, window: Window) -> str:
-    if (window.end - window.start).days <= 1:
-        return f"GTM Email Digest — {report_date.strftime('%A, %b %-d, %Y')}"
-    last_day = window.end - timedelta(days=1)
-    return f"GTM Email Digest — {window.start.strftime('%a %b %-d')} – {last_day.strftime('%a %b %-d, %Y')}"
 
 
 def default_report_date(now: datetime, tz: ZoneInfo) -> date:
@@ -308,10 +297,30 @@ def compute_stats(emails: Iterable[Email]) -> Stats:
     return stats
 
 
+def rate_value(numerator: int, denominator: int) -> float | None:
+    return None if denominator <= 0 else 100 * numerator / denominator
+
+
 def rate(numerator: int, denominator: int) -> str:
-    if denominator <= 0:
+    value = rate_value(numerator, denominator)
+    return "n/a" if value is None else f"{value:.1f}%"
+
+
+def delta(current: int, previous: int) -> str:
+    """Signed change, e.g. '+12', '-3', '±0'."""
+    change = current - previous
+    if change == 0:
+        return "±0"
+    return f"{change:+d}"
+
+
+def rate_delta(current: float | None, previous: float | None) -> str:
+    if current is None or previous is None:
         return "n/a"
-    return f"{100 * numerator / denominator:.1f}%"
+    change = current - previous
+    if abs(change) < 0.05:
+        return "±0.0 pts"
+    return f"{change:+.1f} pts"
 
 
 # --------------------------------------------------------------------------- #
@@ -325,17 +334,19 @@ def _context(text: str) -> dict:
     return {"type": "context", "elements": [{"type": "mrkdwn", "text": text[:2990]}]}
 
 
-def _campaign_table(stats: Stats) -> str:
-    if not stats.by_campaign:
+def _campaign_table(current: Stats, previous: Stats) -> str:
+    if not current.by_campaign:
         return "_No campaign activity._"
-    items = list(stats.by_campaign.items())[:MAX_LISTED_CAMPAIGNS]
-    width = max(len("Campaign"), *(len(name) for name, _ in items))
-    width = min(width, 48)
-    lines = [f"{'Campaign':<{width}}  {'Sent':>5}  {'Replies':>7}  {'Human':>5}"]
-    for name, campaign in items:
+    items = list(current.by_campaign.items())[:MAX_LISTED_CAMPAIGNS]
+    width = min(max(len("Campaign"), *(len(name) for name, _ in items)), 40)
+    lines = [f"{'Campaign':<{width}}  {'Sent':>10}  {'Replies':>10}"]
+    for name, stats in items:
+        prev = previous.by_campaign.get(name, CampaignStats())
         label = name if len(name) <= width else name[: width - 1] + "…"
-        lines.append(f"{label:<{width}}  {campaign.sent:>5}  {campaign.replies:>7}  {campaign.human_replies:>5}")
-    hidden = len(stats.by_campaign) - len(items)
+        sent = f"{stats.sent} ({delta(stats.sent, prev.sent)})"
+        replies = f"{stats.replies} ({delta(stats.replies, prev.replies)})"
+        lines.append(f"{label:<{width}}  {sent:>10}  {replies:>10}")
+    hidden = len(current.by_campaign) - len(items)
     if hidden > 0:
         lines.append(f"… and {hidden} more campaign(s)")
     return "```\n" + "\n".join(lines) + "\n```"
@@ -347,43 +358,44 @@ def _reply_line(email: Email) -> str:
     return f"• {marker}{email.lead} · {email.campaign} · _{subject}_"
 
 
-def _stats_lines(stats: Stats) -> str:
-    manual = f" (+{stats.manual_sent} manual)" if stats.manual_sent else ""
+def _headline(current: Stats, previous: Stats) -> str:
+    cur_rate = rate_value(current.replies, current.sent)
+    prev_rate = rate_value(previous.replies, previous.sent)
     lines = [
-        f"• *Sent:* {stats.sent} campaign emails{manual}",
-        f"• *Replies:* {stats.replies} total · {stats.human_replies} human · {stats.auto_replies} auto-reply/OOO",
-        f"• *Reply rate:* {rate(stats.replies, stats.sent)} overall · {rate(stats.human_replies, stats.sent)} human",
+        f"*Sent:* {current.sent}  ({delta(current.sent, previous.sent)})",
+        f"*Replies:* {current.replies}  ({delta(current.replies, previous.replies)})"
+        f"  ·  {current.human_replies} from people, {current.auto_replies} auto-reply/OOO",
+        f"*Reply rate:* {rate(current.replies, current.sent)}  ({rate_delta(cur_rate, prev_rate)})",
     ]
-    if stats.interested:
-        lines.append(f"• *Flagged interested:* {stats.interested}")
+    if current.interested or previous.interested:
+        lines.append(f"*Flagged interested:* {current.interested}  ({delta(current.interested, previous.interested)})")
     return "\n".join(lines)
 
 
 def build_message(
     *,
-    report_date: date,
-    day_window: Window,
-    month_window: Window,
-    day_emails: Sequence[Email],
-    month_emails: Sequence[Email],
+    window: Window,
+    previous_window: Window,
+    emails: Sequence[Email],
+    previous_emails: Sequence[Email],
     workspace_name: str,
     project_name: str,
     tz_name: str,
     generated_at: datetime,
 ) -> tuple[str, list[dict]]:
-    day_stats = compute_stats(day_emails)
-    month_stats = compute_stats(month_emails)
-    title = digest_title(report_date, day_window)
-    period = period_name(day_window)
+    current = compute_stats(emails)
+    previous = compute_stats(previous_emails)
+    days = (window.end - window.start).days
+    title = f"GTM Email Digest — Last {days} days ({window.label})"
 
     blocks: list[dict] = [
         {"type": "header", "text": {"type": "plain_text", "text": title[:150], "emoji": True}},
-        _context(f"Grapple workspace *{workspace_name}* · project *{project_name}* · day boundaries in {tz_name}"),
-        _section(f"*{period} ({day_window.label})*\n{_stats_lines(day_stats)}"),
+        _context(f"Change in parentheses is vs. the previous {days} days ({previous_window.label})."),
+        _section(_headline(current, previous)),
+        _section(f"*By campaign*\n{_campaign_table(current, previous)}"),
     ]
 
-    human = sorted((e for e in day_emails if e.is_human_reply), key=lambda e: e.timestamp)
-    auto = sorted((e for e in day_emails if e.is_auto_reply), key=lambda e: e.timestamp)
+    human = sorted((e for e in emails if e.is_human_reply), key=lambda e: e.timestamp, reverse=True)
     if human:
         listed = human[:MAX_LISTED_REPLIES]
         text = f"*Replies from people ({len(human)})*\n" + "\n".join(_reply_line(e) for e in listed)
@@ -391,24 +403,19 @@ def build_message(
             text += f"\n… and {len(human) - len(listed)} more"
         blocks.append(_section(text))
     else:
-        when = "yesterday" if period == "Yesterday" else "over the weekend"
-        blocks.append(_section(f"*Replies from people*\n_No human replies {when}._"))
-    if auto:
-        listed = auto[:MAX_LISTED_REPLIES]
-        text = f"*Auto-replies / out of office ({len(auto)})*\n" + "\n".join(_reply_line(e) for e in listed)
-        if len(auto) > len(listed):
-            text += f"\n… and {len(auto) - len(listed)} more"
-        blocks.append(_context(text))
+        blocks.append(_section("*Replies from people*\n_None in this period._"))
 
-    blocks.append(_section(f"*By campaign ({day_window.label})*\n{_campaign_table(day_stats)}"))
-    blocks.append({"type": "divider"})
-    blocks.append(_section(f"*Month to date ({month_window.label})*\n{_stats_lines(month_stats)}"))
-    blocks.append(_section(f"*By campaign ({month_window.label})*\n{_campaign_table(month_stats)}"))
-    blocks.append(_context(f"Generated {generated_at.strftime('%Y-%m-%d %H:%M %Z')} · source: Grapple REST API"))
+    blocks.append(
+        _context(
+            f"{workspace_name} · {project_name} · days in {tz_name} · "
+            f"generated {generated_at.strftime('%Y-%m-%d %H:%M %Z')}"
+        )
+    )
 
     fallback = (
-        f"{title}: {day_stats.sent} sent, {day_stats.replies} replies "
-        f"({day_stats.human_replies} human). MTD: {month_stats.sent} sent, {month_stats.replies} replies."
+        f"{title}: {current.sent} sent ({delta(current.sent, previous.sent)}), "
+        f"{current.replies} replies ({delta(current.replies, previous.replies)}), "
+        f"{current.human_replies} from people."
     )
     return fallback, blocks
 
@@ -456,6 +463,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--timezone", default=os.environ.get("REPORT_TIMEZONE", DEFAULT_TIMEZONE))
     parser.add_argument("--project", default=os.environ.get("GRAPPLE_PROJECT", DEFAULT_PROJECT))
     parser.add_argument("--channel", default=os.environ.get("SLACK_CHANNEL", DEFAULT_CHANNEL))
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=int(os.environ.get("REPORT_WINDOW_DAYS", DEFAULT_WINDOW_DAYS)),
+        help="Length of the reporting window in days (default 7). The comparison period is the same length before it.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print the message instead of posting to Slack.")
     parser.add_argument(
         "--require-local-hour",
@@ -522,7 +535,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     report_date = date.fromisoformat(args.date) if args.date else default_report_date(now_utc, tz)
-    day_window, month_window = report_windows(report_date, tz)
+    window, previous_window = report_windows(report_date, tz, args.days)
 
     client = GrappleClient(api_key)
     workspace = client.workspace()
@@ -534,14 +547,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         f'"{project["name"]}" in workspace "{workspace["name"]}".'
     )
 
-    day_emails = emails_in(emails, day_window)
-    month_emails = emails_in(emails, month_window)
     text, blocks = build_message(
-        report_date=report_date,
-        day_window=day_window,
-        month_window=month_window,
-        day_emails=day_emails,
-        month_emails=month_emails,
+        window=window,
+        previous_window=previous_window,
+        emails=emails_in(emails, window),
+        previous_emails=emails_in(emails, previous_window),
         workspace_name=workspace["name"],
         project_name=project["name"],
         tz_name=args.timezone,
