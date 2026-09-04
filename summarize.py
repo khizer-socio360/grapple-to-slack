@@ -461,13 +461,42 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--require-local-hour",
         type=int,
         metavar="HOUR",
-        help="Exit quietly unless the current local hour equals HOUR (used by the cron schedule).",
+        help="Exit quietly unless this run corresponds to HOUR o'clock local time (used by the cron schedule).",
+    )
+    parser.add_argument(
+        "--cron",
+        help="The cron expression that triggered this run (github.event.schedule); "
+        "used with --require-local-hour to pick the right one of the two UTC schedules.",
     )
     return parser.parse_args(argv)
 
 
-def should_run_now(now_local: datetime, required_hour: int | None) -> bool:
-    return required_hour is None or now_local.hour == required_hour
+def should_run_now(now_local: datetime, required_hour: int | None, scheduled_utc_hour: int | None = None) -> bool:
+    """Decide whether a scheduled run should post.
+
+    Two cron entries exist (one per UTC offset of the timezone). When the
+    triggering cron's UTC hour is known, check whether that UTC hour lands on
+    the required local hour today; this stays correct even if GitHub starts the
+    job late. Otherwise fall back to the current local hour.
+    """
+    if required_hour is None:
+        return True
+    if scheduled_utc_hour is not None:
+        scheduled = now_local.astimezone(timezone.utc).replace(
+            hour=scheduled_utc_hour, minute=0, second=0, microsecond=0
+        )
+        return scheduled.astimezone(now_local.tzinfo).hour == required_hour
+    return now_local.hour == required_hour
+
+
+def cron_utc_hour(cron: str | None) -> int | None:
+    """Extract the hour field from a 5-field cron expression, if it is a plain number."""
+    if not cron:
+        return None
+    fields = cron.split()
+    if len(fields) != 5 or not fields[1].isdigit():
+        return None
+    return int(fields[1])
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -476,8 +505,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     now_utc = datetime.now(tz=timezone.utc)
     now_local = now_utc.astimezone(tz)
 
-    if not should_run_now(now_local, args.require_local_hour):
-        print(f"Local time is {now_local:%H:%M %Z}; not the {args.require_local_hour}:00 run. Skipping.")
+    if not should_run_now(now_local, args.require_local_hour, cron_utc_hour(args.cron)):
+        print(
+            f"Local time is {now_local:%H:%M %Z} (cron: {args.cron or 'n/a'}); "
+            f"not the {args.require_local_hour}:00 local run. Skipping."
+        )
         return 0
 
     api_key = os.environ.get("GRAPPLE_API_KEY")

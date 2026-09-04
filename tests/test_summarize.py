@@ -226,12 +226,32 @@ class MessageTests(unittest.TestCase):
 
 
 class GateTests(unittest.TestCase):
-    def test_should_run_now(self):
+    def test_should_run_now_by_local_hour(self):
         nine = datetime(2026, 9, 3, 9, 4, tzinfo=TZ)
         ten = datetime(2026, 9, 3, 10, 0, tzinfo=TZ)
         self.assertTrue(s.should_run_now(nine, 9))
         self.assertFalse(s.should_run_now(ten, 9))
         self.assertTrue(s.should_run_now(ten, None))
+
+    def test_should_run_now_by_scheduled_utc_hour_in_summer(self):
+        # September: CDT (UTC-5). 14:00 UTC is 9 AM local; 15:00 UTC is 10 AM.
+        late_start = datetime(2026, 9, 4, 10, 25, tzinfo=TZ)  # job delayed past 10 AM
+        self.assertTrue(s.should_run_now(late_start, 9, scheduled_utc_hour=14))
+        self.assertFalse(s.should_run_now(late_start, 9, scheduled_utc_hour=15))
+
+    def test_should_run_now_by_scheduled_utc_hour_in_winter(self):
+        # December: CST (UTC-6). 15:00 UTC is 9 AM local; 14:00 UTC is 8 AM.
+        now = datetime(2026, 12, 4, 8, 3, tzinfo=TZ)
+        self.assertFalse(s.should_run_now(now, 9, scheduled_utc_hour=14))
+        self.assertTrue(s.should_run_now(now, 9, scheduled_utc_hour=15))
+
+    def test_cron_utc_hour(self):
+        self.assertEqual(s.cron_utc_hour("3 14 * * 1-5"), 14)
+        self.assertEqual(s.cron_utc_hour("0 15 * * 1-5"), 15)
+        self.assertIsNone(s.cron_utc_hour(None))
+        self.assertIsNone(s.cron_utc_hour(""))
+        self.assertIsNone(s.cron_utc_hour("0 */2 * * *"))
+        self.assertIsNone(s.cron_utc_hour("garbage"))
 
 
 class SlackTests(unittest.TestCase):

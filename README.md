@@ -22,10 +22,17 @@ boundaries are computed in America/Chicago.
 ## How it runs
 
 `.github/workflows/daily-digest.yml` runs on a GitHub Actions cron. GitHub cron
-is UTC-only, so two schedules are registered (14:00 and 15:00 UTC) and the
+is UTC-only, so two schedules are registered (14:03 and 15:03 UTC) and the
 script's `--require-local-hour 9` flag makes only the one that lands at
-9 AM local actually post. That keeps the send time stable across daylight
-saving changes.
+9 AM local actually post. The workflow passes the triggering cron expression
+so the check uses the scheduled hour, not the actual start time, and still
+posts if GitHub starts the job late. That keeps the send time stable across
+daylight saving changes.
+
+GitHub only registers a workflow's cron from the default branch, and it does
+so when a commit is pushed to that branch. If the schedule ever stops firing
+(for example after changing the default branch), push any commit touching the
+workflow file to the default branch, or run it manually from the Actions tab.
 
 ## One-time setup
 
@@ -72,7 +79,8 @@ python -m unittest discover -s tests -v
 
 ## Changing things
 
-- **Send time:** edit the two cron lines in `daily-digest.yml` and the
+- **Send time:** edit the two cron lines in `daily-digest.yml` (keep them one
+  hour apart, matching the timezone's two UTC offsets) and the
   `--require-local-hour` value in the same file.
 - **Timezone:** set `REPORT_TIMEZONE` in the workflow (any IANA name).
 - **Channel:** set the `SLACK_CHANNEL` repository variable.
