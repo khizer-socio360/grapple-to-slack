@@ -26,11 +26,12 @@ anything since the last one.
 Each alert shows the lead's email, campaign, subject, received time
 (America/Chicago) and the raw interest value.
 
-## Weekly digest (`summarize.py`, manual only)
+## About `summarize.py`
 
-The earlier 7-day digest with deltas versus the prior 7 days is still in the
-repo and can be run from the Actions tab ("GTM email digest (manual)") or
-locally. It no longer runs on a schedule.
+`summarize.py` holds the shared Grapple client, row parsing and Slack
+posting code that `alert.py` imports. It can also still produce the earlier
+7-day digest locally (`python summarize.py --dry-run`), but nothing runs it
+automatically.
 
 Data comes from the [Grapple REST API](https://docs.askgrapple.com/api)
 (`GET /me`, `GET .../projects`, `GET .../projects/{id}/data`). The API has no
@@ -71,7 +72,7 @@ python alert.py --dry-run                         # preview alerts, don't post o
 python alert.py --dry-run --min-interest 0        # preview the format using neutral replies
 export SLACK_BOT_TOKEN=xoxb-...
 python alert.py                                   # post for real and update state/alerted.json
-python summarize.py --dry-run                     # the manual 7-day digest
+python summarize.py --dry-run                     # the old 7-day digest, local only
 ```
 
 Run the tests with:
