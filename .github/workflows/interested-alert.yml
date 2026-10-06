@@ -1,0 +1,64 @@
+name: Interested reply alert
+
+on:
+  schedule:
+    # Every hour. Each run catches up on anything since the last one, and the
+    # state file prevents repeats, so a delayed or skipped run is harmless.
+    - cron: "7 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print alerts in the job log instead of posting to Slack"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: interested-alert
+  cancel-in-progress: false
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Check for new interested replies
+        env:
+          GRAPPLE_API_KEY: ${{ secrets.GRAPPLE_API_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ vars.SLACK_CHANNEL || '#gtm' }}
+          REPORT_TIMEZONE: America/Chicago
+        run: |
+          args=()
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          python alert.py "${args[@]}"
+
+      - name: Save alert state
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          if git diff --quiet -- state/alerted.json; then
+            echo "State unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/alerted.json
+          git commit -m "Record alerted replies [skip ci]"
+          git pull --rebase origin "${{ github.ref_name }}"
+          git push origin HEAD:"${{ github.ref_name }}"

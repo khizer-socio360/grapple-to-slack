@@ -1,14 +1,8 @@
-name: Daily GTM email digest
+name: GTM email digest (manual)
 
 on:
-  schedule:
-    # 9:00 AM America/Chicago on weekdays. GitHub cron is UTC-only, so both
-    # the CDT (UTC-5) and CST (UTC-6) offsets are scheduled; the script's
-    # --require-local-hour flag skips whichever one is not 9 AM local.
-    # Scheduled a few minutes past the hour: GitHub queues are busiest at :00
-    # and runs scheduled exactly on the hour are the most likely to be delayed.
-    - cron: "3 14 * * 1-5"
-    - cron: "3 15 * * 1-5"
+  # The scheduled post was replaced by the interested-reply alert
+  # (interested-alert.yml). The digest can still be run by hand.
   workflow_dispatch:
     inputs:
       report_date:
